@@ -95,10 +95,27 @@ def GetTokenInfo(driver, TradingPairLists, state):
     return TokenInfoLists
 
 
+def ExchangeTokenList(save_address):
+    ExchangeTradingPair = pd.read_excel(save_address)
+    TokenPair = list(ExchangeTradingPair['token'])
+    return TokenPair
+
+
+def InquireTokenInfo(TokenList):
+    TokenData = pd.read_excel('TokenInfo.xlsx', index_col='Unnamed: 0')
+    TokenData_MC3000 = TokenData[TokenData['TokenMCRank'] < 3000]
+    TokenFilter_df = pd.DataFrame()
+    for i in range(len(TokenData_MC3000)):
+        if TokenData_MC3000.iloc[i, 2].upper() in TokenList:
+            TokenFilter_df = pd.concat([TokenFilter_df, TokenData_MC3000.iloc[[i]]])
+        print(i)
+    return TokenFilter_df
+
+
 def save_file(Data, col_name, save_address):
     Name = col_name
     TokenData = pd.DataFrame(data=Data, columns=Name)
-    TokenData.to_excel(save_address)
+    TokenData.to_excel(save_address, index=False)
 
 
 def main():
@@ -125,6 +142,20 @@ def main():
     Tokeninfo_save_address = 'TokenInfo.xlsx'
     TokenInfoData = GetTokenInfo(driver, TradingPairs_all, state)
     save_file(TokenInfoData, TokenInfo_colname, Tokeninfo_save_address)
+
+    # Get the intersection of the exchange
+    binance = ExchangeTokenList('binance_OnlyPairs.xlsx')
+    coinbase = ExchangeTokenList('coinbase-exchange_OnlyPairs.xlsx')
+    okx = ExchangeTokenList('okx_OnlyPairs.xlsx')
+    upbit = ExchangeTokenList('upbit_OnlyPairs.xlsx')
+    coinbase_unbit = list(set(coinbase).intersection(set(upbit)))
+    bn_cb_okx = list(set(coinbase).intersection(set(okx)).intersection(set(binance)))
+
+    coinbase_upbit_info = InquireTokenInfo(coinbase_unbit)
+    bn_cb_okx_info = InquireTokenInfo(bn_cb_okx)
+
+    save_file(coinbase_upbit_info, TokenInfo_colname, 'coinbase_upbit_info.xlsx')
+    save_file(bn_cb_okx_info, TokenInfo_colname, 'bn_cb_okx_info.xlsx')
 
 
 if __name__ == 'main':
