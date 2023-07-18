@@ -7,12 +7,9 @@ Created on 2023.06.12
 from selenium import webdriver
 import time
 import pandas as pd
-from bs4 import BeautifulSoup
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from random import randint
 import requests
 import json
 
@@ -39,7 +36,7 @@ def GetTradingPairs(driver, URL):
     for i in range(1, int(amount)+1):
         try:
             WebDriverWait(driver, 100).until(EC.presence_of_element_located((By.XPATH, '/html/body/div[2]/main/div[3]/div[1]/div[3]/div/div[1]/div/div[2]/table/tbody/tr[{}]/td[4]'.format(i))))
-        except:
+        except TimeoutError:
             break
         TradingPairName = driver.find_element(By.XPATH, '/html/body/div[2]/main/div[3]/div[1]/div[3]/div/div[1]/div/div[2]/table/tbody/tr[{}]/td[4]'.format(i)).text
         TradingPairName = TradingPairName.split('/')
@@ -47,41 +44,55 @@ def GetTradingPairs(driver, URL):
             WebDriverWait(driver, 100).until(EC.element_to_be_clickable((By.XPATH, '/html/body/div[2]/main/div[3]/div[1]/div[3]/div/div[1]/div/div[2]/div/a/span')))
             driver.find_element(By.XPATH, '/html/body/div[2]/main/div[3]/div[1]/div[3]/div/div[1]/div/div[2]/div/a/span').click()
         TradingPairLists.append(TradingPairName[0])
-        print(i)
+        print(i, amount)
     TradingPairLists = list(set(TradingPairLists))
-    return driver, TradingPairLists
+    driver.quit()
+    return TradingPairLists
 
 
 # Get Token MC and FDV
 def GetTokenInfo(driver, TradingPairLists, state):
-    TokenInfoLists = []
+    TokenWebsite = []
     for token in TradingPairLists:
         for token_gecko in state:
             if token.lower() == token_gecko['symbol']:
                 token_id = token_gecko['id']
+                TokenWebsite.append(token_id)
                 break
             else:
                 continue
-        
-        driver.get('https://www.coingecko.com/en/coins/{}'.format(token_id))
-        time.sleep(randint(5, 8))
-        WebDriverWait(driver, 100).until(EC.presence_of_element_located((By.XPATH, '/html/body/div[2]/main/div[3]/div[1]/div[3]/div/div[1]/div/div[2]/div/a/span')))
-        html = driver.page_source
-        TokenAddress = driver.current_url
 
-        html_BS4 = BeautifulSoup(html, 'lxml')
-        TokenName = html_BS4.find(class_='tw-font-bold tw-text-gray-900 dark:tw-text-white dark:tw-text-opacity-87 md:tw-text-xl tw-text-lg tw-ml-2 tw-mr-1').text.replace('\n', '')
-        TokenPrice = html_BS4.find(class_='tw-text-gray-900 dark:tw-text-white tw-text-3xl').find(class_='no-wrap').text.replace('$', '').replace(',', '')
+    i = 0
+    TokenWebsite_list = []
+    while (i < len(TokenWebsite)):
+        TokenWebsite_list.append(TokenWebsite[i: i+100])
+        i += 100
+    TokenWebsite_split = ['%2C'.join(i) for i in TokenWebsite_list]
 
-        InfoTable = html_BS4.find(class_='tw-col-span-2 lg:tw-col-span-2')
-        InfoTables = InfoTable.find_all(class_='tw-grid tw-grid-cols-2')
-        TokenMC = InfoTables[-1].find(string='\nMarket Cap\n').parent.parent.find(class_='no-wrap').text.replace('$', '').replace(',', '')
-        TokenFDV = InfoTables[-1].find(string='\nFully Diluted Valuation\n').parent.parent.find(class_='no-wrap').text.replace('$', '').replace(',', '')
-        McFdv = float(TokenMC) / float(TokenFDV)
+    TokenInfoLists = []
+    for TokenList in TokenWebsite_split:
+        RequestURL = 'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={}&order=market_cap_desc&per_page=250&page=1&sparkline=false&locale=en'.format(TokenList)
+        TokenRequest = requests.get(RequestURL)
+        TokenInfoGeckoAPI = json.loads(TokenRequest.text)
 
-        TokenInfoLists.append([TokenName, token, TokenAddress, TokenPrice, TokenMC, TokenFDV, McFdv])
-        print(token)
-    return driver, TokenInfoLists
+        for Token in TokenInfoGeckoAPI:
+            TokenSymbol = Token['symbol']
+            TokenName = Token['name']
+            TokenAddress = 'https://www.coingecko.com/en/coins/{}'.format(Token['id'])
+            TokenPrice = Token['current_price']
+            TokenMC = Token['market_cap']
+            TokenMCRank = Token['market_cap_rank']
+            TokenFDV = Token['fully_diluted_valuation']
+            try:
+                McFdv = float(TokenMC) / float(TokenFDV)
+            except TypeError:
+                McFdv = '/'
+            except ZeroDivisionError:
+                McFdv = '/'
+            TokenInfoLists.append([TokenMCRank, TokenName, TokenSymbol, TokenAddress, TokenPrice, TokenMC, TokenFDV, McFdv])
+            print(TokenName)
+        time.sleep(60)
+    return TokenInfoLists
 
 
 def save_file(Data, col_name, save_address):
@@ -91,7 +102,7 @@ def save_file(Data, col_name, save_address):
 
 
 def main():
-    ExchangeURL = ['https://www.coingecko.com/en/exchanges/coinbase-exchange', 'https://www.coingecko.com/en/exchanges/binance'
+    ExchangeURL = ['https://www.coingecko.com/en/exchanges/coinbase-exchange', 'https://www.coingecko.com/en/exchanges/binance',
                    'https://www.coingecko.com/en/exchanges/okx', 'https://www.coingecko.com/en/exchanges/upbit']
     driver = OpenChromeDriver()
 
@@ -110,11 +121,10 @@ def main():
     TokenList_Coingecko = requests.get('https://api.coingecko.com/api/v3/coins/list')
     state = json.loads(TokenList_Coingecko.text)
 
-    driver, TokenInfoLists = GetTokenInfo(driver, TradingPairs_all, state)
-    TokenInfo_colname = ['TokenName', 'token', 'TokenAddress', 'TokenPrice', 'TokenMC', 'TokenFDV', 'McFdv']
-    TokenInfo_data = TokenInfoLists
+    TokenInfo_colname = ['TokenMCRank', 'TokenName', 'TokenSymbol', 'TokenAddress', 'TokenPrice', 'TokenMC', 'TokenFDV', 'McFdv']
     Tokeninfo_save_address = 'TokenInfo.xlsx'
-    save_file(TokenInfo_data, TokenInfo_colname, Tokeninfo_save_address)
+    TokenInfoData = GetTokenInfo(driver, TradingPairs_all, state)
+    save_file(TokenInfoData, TokenInfo_colname, Tokeninfo_save_address)
 
 
 if __name__ == 'main':
