@@ -12,6 +12,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import requests
 import json
+from selenium.common.exceptions import TimeoutException
 
 
 # Open Chrome and Access the Website
@@ -36,31 +37,52 @@ def GetTradingPairs(driver, URL):
     for i in range(1, int(amount)+1):
         try:
             WebDriverWait(driver, 100).until(EC.presence_of_element_located((By.XPATH, '/html/body/div[2]/main/div[3]/div[1]/div[3]/div/div[1]/div/div[2]/table/tbody/tr[{}]/td[4]'.format(i))))
-        except TimeoutError:
+        except (TimeoutError, TimeoutException):
             break
+
+        TradingPairName_row = driver.find_element(By.XPATH, '/html/body/div[2]/main/div[3]/div[1]/div[3]/div/div[1]/div/div[2]/table/tbody/tr[{}]/td[2]'.format(i)).text
+        if '/' in TradingPairName_row:
+            TradingPairName_all = TradingPairName_row.split('/')[0]
+        else:
+            TradingPairName_all = TradingPairName_row
+        TradingPairName_all = TradingPairName_all.rstrip(' ')
+        
         TradingPairName = driver.find_element(By.XPATH, '/html/body/div[2]/main/div[3]/div[1]/div[3]/div/div[1]/div/div[2]/table/tbody/tr[{}]/td[4]'.format(i)).text
         TradingPairName = TradingPairName.split('/')
         if i % 50 == 0:
             WebDriverWait(driver, 100).until(EC.element_to_be_clickable((By.XPATH, '/html/body/div[2]/main/div[3]/div[1]/div[3]/div/div[1]/div/div[2]/div/a/span')))
             driver.find_element(By.XPATH, '/html/body/div[2]/main/div[3]/div[1]/div[3]/div/div[1]/div/div[2]/div/a/span').click()
-        TradingPairLists.append(TradingPairName[0])
+        TradingPairLists.append([TradingPairName[0], TradingPairName_all])
         print(i, amount)
-    TradingPairLists = list(set(TradingPairLists))
-    driver.quit()
-    return TradingPairLists
+    TradingPairLists = [list(t) for t in set(tuple(_) for _ in TradingPairLists)]
+    return driver, TradingPairLists
 
 
 # Get Token MC and FDV
-def GetTokenInfo(driver, TradingPairLists, state):
+def GetTokenInfo(TradingPairLists, state):
     TokenWebsite = []
+    NotFoundToken = []
     for token in TradingPairLists:
         for token_gecko in state:
-            if token.lower() == token_gecko['symbol']:
-                token_id = token_gecko['id']
-                TokenWebsite.append(token_id)
-                break
+            if token[1].count('.') >= 3:
+                if token[0].lower() == token_gecko['symbol'] and token[1].replace('.', '') in token_gecko['name'].replace('.', ''):
+                    token_id = token_gecko['id']
+                    TokenWebsite.append(token_id)
+                    break
+                elif token_gecko == state[-1]:
+                    NotFoundToken.append(token)
+                else:
+                    continue
             else:
-                continue
+                if token[0].lower() == token_gecko['symbol'] and token[1] == token_gecko['name']:
+                    token_id = token_gecko['id']
+                    TokenWebsite.append(token_id)
+                    break
+                elif token_gecko == state[-1]:
+                    NotFoundToken.append(token)
+                else:
+                    continue
+    TokenWebsite = list(set(TokenWebsite))
 
     i = 0
     TokenWebsite_list = []
@@ -97,18 +119,34 @@ def GetTokenInfo(driver, TradingPairLists, state):
 
 def ExchangeTokenList(save_address):
     ExchangeTradingPair = pd.read_excel(save_address)
-    TokenPair = list(ExchangeTradingPair['token'])
-    return TokenPair
+    ExchangeListPair = [(ExchangeTradingPair.iloc[i,0], ExchangeTradingPair.iloc[i,1]) for i in range(len(ExchangeTradingPair))]
+    return ExchangeListPair
 
 
 def InquireTokenInfo(TokenList):
-    TokenData = pd.read_excel('TokenInfo.xlsx', index_col='Unnamed: 0')
-    TokenData_MC3000 = TokenData[TokenData['TokenMCRank'] < 3000]
+    TokenData = pd.read_excel('TokenInfo.xlsx')
     TokenFilter_df = pd.DataFrame()
-    for i in range(len(TokenData_MC3000)):
-        if TokenData_MC3000.iloc[i, 2].upper() in TokenList:
-            TokenFilter_df = pd.concat([TokenFilter_df, TokenData_MC3000.iloc[[i]]])
-        print(i)
+    NotFoundToken = pd.DataFrame()
+    for token in TokenList:
+        for i in range(len(TokenData)):
+            if token[1].count('.') >= 3:
+                if token[0].lower() == TokenData['TokenSymbol'][i] and token[1].replace('.', '') in TokenData['TokenName'][i].replace('.', ''):
+                    TokenFilter_df = pd.concat([TokenFilter_df, TokenData.iloc[[i]]])
+                    break
+                elif i == len(TokenData):
+                    NotFoundToken.append(token)
+                else:
+                    continue
+            else:
+                if token[0].lower() == TokenData['TokenSymbol'][i] and token[1] == TokenData['TokenName'][i]:
+                    TokenFilter_df = pd.concat([TokenFilter_df, TokenData.iloc[[i]]])
+                    break
+                elif i == len(TokenData):
+                    NotFoundToken.append(token)
+                else:
+                    continue
+
+    TokenFilter_df = TokenFilter_df.drop_duplicates()
     return TokenFilter_df
 
 
@@ -119,28 +157,45 @@ def save_file(Data, col_name, save_address):
 
 
 def main():
-    ExchangeURL = ['https://www.coingecko.com/en/exchanges/coinbase-exchange', 'https://www.coingecko.com/en/exchanges/binance',
+    ExchangeURL = ['https://www.coingecko.com/en/exchanges/coinbase-exchange', 
+                   'https://www.coingecko.com/en/exchanges/binance',
                    'https://www.coingecko.com/en/exchanges/okx', 'https://www.coingecko.com/en/exchanges/upbit']
     driver = OpenChromeDriver()
 
     # Get exchange trading pairs and save it as xlsx
+    # 在抓取的时候可能会出现点击下一页点不到的问题，需要手动点一下
     TradingPairs_all = []
     for exchange in ExchangeURL:
         driver, TradingPairLists = GetTradingPairs(driver, exchange)
         exchangeName = exchange.replace('https://www.coingecko.com/en/exchanges/', '')
-        col_name = ['token']
+        col_name = ['symbol', 'name']
         save_address = '{}_OnlyPairs.xlsx'.format(exchangeName)
         save_file(TradingPairLists, col_name, save_address)
-        TradingPairs_all = list(set(TradingPairs_all).union(set(TradingPairLists)))
+        TradingPairs_all = list(set(tuple(_) for _ in TradingPairs_all).union(set(tuple(_) for _ in TradingPairLists)))
         time.sleep(5)
-    
+    driver.quit()
+    save_file(TradingPairs_all, ['symbol', 'name'], 'TradingPairs_all.xlsx')
+
+    '''
+    binance = pd.read_excel('binance_OnlyPairs.xlsx')
+    coinbase = pd.read_excel('coinbase-exchange_OnlyPairs.xlsx')
+    okx = pd.read_excel('okx_OnlyPairs.xlsx')
+    upbit = pd.read_excel('upbit_OnlyPairs.xlsx')
+
+    blist = [(binance.iloc[i,0], binance.iloc[i,1]) for i in range(len(binance))]
+    clist = [(coinbase.iloc[i,0], coinbase.iloc[i,1]) for i in range(len(coinbase))]
+    olist = [(okx.iloc[i,0], okx.iloc[i,1]) for i in range(len(okx))]
+    ulist = [(upbit.iloc[i,0], upbit.iloc[i,1]) for i in range(len(upbit))]
+    TradingPairs_all = list(set(blist).union(set(clist)).union(set(olist)).union(set(ulist)))
+    '''
+
     # Get token info from coingecko API
     TokenList_Coingecko = requests.get('https://api.coingecko.com/api/v3/coins/list')
     state = json.loads(TokenList_Coingecko.text)
 
     TokenInfo_colname = ['TokenMCRank', 'TokenName', 'TokenSymbol', 'TokenAddress', 'TokenPrice', 'TokenMC', 'TokenFDV', 'McFdv']
     Tokeninfo_save_address = 'TokenInfo.xlsx'
-    TokenInfoData = GetTokenInfo(driver, TradingPairs_all, state)
+    TokenInfoData = GetTokenInfo(TradingPairs_all, state)
     save_file(TokenInfoData, TokenInfo_colname, Tokeninfo_save_address)
 
     # Get the intersection of the exchange
@@ -148,10 +203,11 @@ def main():
     coinbase = ExchangeTokenList('coinbase-exchange_OnlyPairs.xlsx')
     okx = ExchangeTokenList('okx_OnlyPairs.xlsx')
     upbit = ExchangeTokenList('upbit_OnlyPairs.xlsx')
-    coinbase_unbit = list(set(coinbase).intersection(set(upbit)))
+
+    coinbase_upbit = list(set(coinbase).intersection(set(upbit)))
     bn_cb_okx = list(set(coinbase).intersection(set(okx)).intersection(set(binance)))
 
-    coinbase_upbit_info = InquireTokenInfo(coinbase_unbit)
+    coinbase_upbit_info = InquireTokenInfo(coinbase_upbit)
     bn_cb_okx_info = InquireTokenInfo(bn_cb_okx)
 
     save_file(coinbase_upbit_info, TokenInfo_colname, 'coinbase_upbit_info.xlsx')
